@@ -413,6 +413,49 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Source
 .audio-dot{width:8px;height:8px;border-radius:50%;background:var(--border);flex-shrink:0;}
 .audio-row.active .audio-dot{background:var(--blue);}
 
+/* ── SUBTITLE / LEGENDA ── */
+#subtitle-box{
+  position:absolute;bottom:130px;left:50%;transform:translateX(-50%);
+  max-width:90%;text-align:center;pointer-events:none;z-index:8;
+  display:none;
+}
+#subtitle-box.show{display:block;}
+.sub-line{
+  display:inline-block;
+  background:rgba(0,0,0,.82);
+  color:#fff;
+  font-size:clamp(16px,2.5vw,26px);
+  font-family:'Arial',sans-serif;
+  font-weight:600;
+  padding:6px 18px;
+  border-radius:6px;
+  line-height:1.5;
+  letter-spacing:.3px;
+  text-shadow:0 1px 4px rgba(0,0,0,.9);
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+/* Menu de legendas */
+#sub-menu{position:absolute;bottom:160px;right:140px;
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--r);
+  min-width:240px;max-height:340px;overflow-y:auto;
+  display:none;box-shadow:0 10px 40px rgba(0,0,0,.9);z-index:50;}
+#sub-menu.show{display:block;}
+.sub-menu-title{padding:10px 16px;font-size:11px;font-weight:700;
+  color:var(--muted);text-transform:uppercase;letter-spacing:1px;
+  border-bottom:1px solid var(--border);}
+.sub-row{padding:11px 16px;font-size:14px;cursor:pointer;display:flex;
+  align-items:center;gap:10px;transition:background .12s;color:var(--soft);}
+.sub-row:hover{background:rgba(255,255,255,.05);color:var(--text);}
+.sub-row.active{color:var(--blue);font-weight:700;}
+.sub-dot{width:8px;height:8px;border-radius:50%;background:var(--border);flex-shrink:0;}
+.sub-row.active .sub-dot{background:var(--blue);}
+.sub-size-row{display:flex;align-items:center;gap:8px;padding:10px 16px;
+  border-top:1px solid var(--border);}
+.sub-size-btn{background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  padding:5px 12px;color:var(--text);font-size:13px;cursor:pointer;flex:1;text-align:center;}
+.sub-size-btn:hover{background:rgba(36,54,211,.18);border-color:var(--blue);}
+
 /* ── GOOGLE TV AUDIO SECTION ── */
 .audio-google-sep{padding:8px 16px 4px;font-size:10px;font-weight:700;color:var(--muted);
   text-transform:uppercase;letter-spacing:1px;border-top:1px solid var(--border);
@@ -620,6 +663,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Source
   <div id="pl-err"></div>
   <div id="zoom-flash"></div>
   <div id="buf-indicator">💾 Calculando buffer...</div>
+  <!-- Legenda renderizada na tela -->
+  <div id="subtitle-box"><span class="sub-line" id="subtitle-text"></span></div>
+  <!-- Menu de seleção de legendas -->
+  <div id="sub-menu">
+    <div class="sub-menu-title">💬 Legendas</div>
+    <div id="sub-list"></div>
+    <div class="sub-size-row">
+      <span style="font-size:12px;color:var(--muted);flex:1">Tamanho:</span>
+      <button class="sub-size-btn" onclick="_subSize(-2)">A−</button>
+      <button class="sub-size-btn" onclick="_subSize(2)">A+</button>
+    </div>
+  </div>
   <div id="resume-bar">
     <span style="flex:1">⏱ Continuar de onde parou?</span>
     <button class="resume-btn" id="resume-yes-btn" onclick="doResume()">▶ Retomar</button>
@@ -659,6 +714,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Source
       <div id="pl-actions">
         <button class="pl-act" id="fav-act" onclick="toggleFavCurrent()">☆ Fav</button>
         <button class="pl-act" id="audio-act" onclick="toggleAudioMenu()">🎵 Áudio</button>
+        <button class="pl-act" id="sub-act" onclick="toggleSubMenu()" title="Legendas">CC</button>
         <button class="pl-act" id="mute-act" onclick="toggleMute()">🔊</button>
         <button class="pl-act" id="zoom-act" onclick="cycleZoom()">⛶ Zoom</button>
         <button class="pl-act" onclick="navBack()">← Voltar</button>
@@ -798,6 +854,23 @@ let modalItem=null,modalType='';
 let seriesData=null,curSeason='';
 let histPopupItem=null;
 const navStack=[];
+
+// ── Cache de referências DOM do player (evita getElementById a cada frame)
+// Populado uma vez em initPlayerRefs(), zerado ao fechar o player
+var _pel={};
+function initPlayerRefs(){
+  _pel.video  = document.getElementById('player-video');
+  _pel.seekFill = document.getElementById('pl-seek-fill');
+  _pel.seekDot  = document.getElementById('pl-seek-dot');
+  _pel.time     = document.getElementById('pl-time');
+  _pel.bufFill  = document.getElementById('pl-buf-fill');
+  _pel.bufBadge = document.getElementById('buf-ahead-badge');
+  _pel.spin     = document.getElementById('pl-spin');
+  _pel.err      = document.getElementById('pl-err');
+  _pel.ui       = document.getElementById('player-ui');
+  _pel.btnPP    = document.getElementById('btn-pp');
+}
+function clearPlayerRefs(){ _pel={}; }
 
 const UA='Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1';
 const SMETA={
@@ -1217,6 +1290,9 @@ async function loadCatItems(sec,catId,catName){
     const extra=catId==='all'?'':`&category_id=${catId}`;
     const raw=await apiGet(meta.itemA,extra);
     if(!Array.isArray(raw))throw new Error('Lista inválida');
+    // Limita sessionCache a 30 entradas (LRU: remove a mais antiga)
+    const cKeys=Object.keys(sessionCache);
+    if(cKeys.length>=30){delete sessionCache[cKeys[0]];}
     sessionCache[cKey]=raw;
     if(sec==='live')cacheLiveChs(raw);
     renderItems(sec,raw);
@@ -1361,13 +1437,15 @@ function renderChannels(list){
   setGridsVisible(true,false);
   const grid=document.getElementById('ch-grid');grid.innerHTML='';
   if(!list.length){grid.innerHTML='<div class="g-msg"><div class="g-icon">📭</div><p>Nenhum canal</p></div>';return;}
+  const frag=document.createDocumentFragment();
   list.forEach((ch,i)=>{
     const card=document.createElement('div');
     card.className='ch-card'+(isFavSid(ch.stream_id)?' fav':'');
     card.innerHTML=`<div class="ch-logo-box">${ch.stream_icon?`<img src="${ch.stream_icon}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=nologo>📺</span>'">`:'<span class="nologo">📺</span>'}</div><div><div class="ch-name">${esc(ch.name)}</div><div class="ch-num">#${ch.num||i+1}</div></div>`;
     card.onclick=()=>{curItemIdx=i;playLive(ch);};
-    grid.appendChild(card);
+    frag.appendChild(card);
   });
+  grid.appendChild(frag);
 }
 
 function renderVOD(list,sec){
@@ -1375,6 +1453,7 @@ function renderVOD(list,sec){
   const grid=document.getElementById('vod-grid');grid.innerHTML='';
   if(!list.length){grid.innerHTML='<div class="g-msg"><div class="g-icon">📭</div><p>Nenhum título</p></div>';return;}
   const icon=sec==='series'?'📽':'🎬';
+  const frag=document.createDocumentFragment();
   list.forEach((item,i)=>{
     const card=document.createElement('div');
     const sid=item.stream_id||item.series_id;
@@ -1383,8 +1462,9 @@ function renderVOD(list,sec){
     card.innerHTML=poster?`<img class="vod-poster" src="${poster}" loading="lazy" onerror="this.outerHTML='<div class=vod-nopost>${icon}<small>${esc(name)}</small></div>'">`:`<div class="vod-nopost">${icon}<small>${esc(name)}</small></div>`;
     card.innerHTML+=`<div class="vod-info"><div class="vod-title">${esc(name)}</div><div class="vod-meta">${item.year||''} ${item.rating?'⭐'+item.rating:''}</div></div>`;
     card.onclick=()=>{curItemIdx=i;openVodModal(item,sec==='series'?'series':'movie');};
-    grid.appendChild(card);
+    frag.appendChild(card);
   });
+  grid.appendChild(frag);
 }
 
 function onSearch(q){
@@ -1611,6 +1691,7 @@ function playEpisode(ep){
 
 function openPlayer(urls,resumePos){
   document.getElementById('player-page').classList.add('show');
+  initPlayerRefs(); // cacheia referências DOM — evita getElementById a cada frame
   pUrls=urls;pIdx=0;mErr=0;
   showPlSpin(true);showPlErr(false);closeResume();
   if(resumePos&&resumePos>5){document.getElementById('resume-yes-btn').dataset.pos=resumePos;document.getElementById('resume-bar').classList.add('show');}
@@ -1698,6 +1779,7 @@ function loadUrl(idx){
       document.getElementById('btn-pp').textContent='⏸';
       setTimeout(buildAudioMenu,600);
       setTimeout(_gtvRestoreTrack,1200);
+      setTimeout(initSubtitles,800);
       // Mostra indicador de buffer apenas para VOD
       if(isVOD)showBufIndicator(bc);
     });
@@ -1736,13 +1818,11 @@ function updateSmartBufBar(v){
   if(!v||!v.buffered||!v.buffered.length)return;
   var buf=v.buffered,dur=v.duration||0,cur=v.currentTime||0;
   var bufEnd=buf.end(buf.length-1);
-  // Barra de buffer existente (progresso azul)
   var pct=dur>0?Math.min((bufEnd/dur)*100,100):0;
-  var el=document.getElementById('pl-buf-fill');
+  var el=_pel.bufFill||document.getElementById('pl-buf-fill');
   if(el)el.style.width=pct+'%';
-  // Indicador de segundos à frente
   var ahead=Math.max(0,bufEnd-cur);
-  var badgeEl=document.getElementById('buf-ahead-badge');
+  var badgeEl=_pel.bufBadge||document.getElementById('buf-ahead-badge');
   if(badgeEl){
     if(ahead>5){
       badgeEl.textContent='⬛ '+getBufLabel(Math.floor(ahead))+' em cache';
@@ -1759,6 +1839,8 @@ function stopAndClosePlayer(){
   clearTimeout(overlayTimer);clearTimeout(posTimer);clearTimeout(epgTimer);
   document.getElementById('player-page').classList.remove('show');
   document.getElementById('pl-epg').style.display='none';
+  _subOff();hideSubMenu();
+  clearPlayerRefs(); // libera refs ao fechar
 }
 
 function setPlHeader(title,isLive,thumb){
@@ -1769,7 +1851,7 @@ function setPlHeader(title,isLive,thumb){
   document.getElementById('pl-pos').textContent=!isVOD?(curItemIdx+1)+' / '+visItems.length:'';
 }
 
-function showPlSpin(on){document.getElementById('pl-spin').style.display=on?'block':'none';}
+function showPlSpin(on){(_pel.spin||document.getElementById('pl-spin')).style.display=on?'block':'none';}
 function showPlErr(on,msg){const el=document.getElementById('pl-err');el.style.display=on?'block':'none';if(msg)el.textContent=msg;}
 
 function togglePlay(){const v=document.getElementById('player-video');if(v.paused){v.play();isPlaying=true;document.getElementById('btn-pp').textContent='⏸';}else{v.pause();isPlaying=false;document.getElementById('btn-pp').textContent='▶';}}
@@ -1779,7 +1861,7 @@ function nextItem(){if(!isVOD&&visItems.length&&curItemIdx<visItems.length-1){cu
 function seekFF(){const v=document.getElementById('player-video');if(v.duration&&!isNaN(v.duration))v.currentTime=Math.min(v.currentTime+30,v.duration);else if(v.buffered.length)v.currentTime=Math.min(v.currentTime+30,v.buffered.end(v.buffered.length-1));showOverlay();}
 function seekRW(){const v=document.getElementById('player-video');v.currentTime=Math.max((v.currentTime||0)-30,0);showOverlay();}
 
-function showOverlay(){const ui=document.getElementById('player-ui');ui.classList.add('vis');clearTimeout(overlayTimer);overlayTimer=setTimeout(()=>ui.classList.remove('vis'),4500);}
+function showOverlay(){const ui=_pel.ui||document.getElementById('player-ui');ui.classList.add('vis');clearTimeout(overlayTimer);overlayTimer=setTimeout(()=>ui.classList.remove('vis'),4500);}
 function toggleOverlay(){const ui=document.getElementById('player-ui');if(ui.classList.contains('vis')){ui.classList.remove('vis');clearTimeout(overlayTimer);}else showOverlay();}
 document.getElementById('player-video').onclick=toggleOverlay;
 document.getElementById('player-page').addEventListener('mousemove',showOverlay);
@@ -1798,17 +1880,25 @@ function applyZoom(){const v=document.getElementById('player-video');v.className
 function posKey(sid){return'stv_pos_'+sid;}
 function getSavedPos(sid){try{const v=JSON.parse(tvGet(posKey(sid)));return v?.t>5?v.t:0;}catch{return 0;}}
 function autoSavePos(){
-  const v=document.getElementById('player-video');
+  const v=_pel.video||document.getElementById('player-video');
   if(!pItem?.stream_id||!v.duration||isNaN(v.duration))return;
   clearTimeout(posTimer);const sid=pItem.stream_id,pos=v.currentTime,dur=v.duration;
   posTimer=setTimeout(()=>{if(pos>5){tvSet(posKey(sid),JSON.stringify({t:Math.floor(pos),d:Math.floor(dur),ts:Date.now()}));updateHistDur(sid,dur);}},3000);
 }
 function updateSeek(){
-  const v=document.getElementById('player-video');const dot=document.getElementById('pl-seek-dot');
+  const v=_pel.video||document.getElementById('player-video');
+  const dot=_pel.seekDot||document.getElementById('pl-seek-dot');
   const hasDur=v.duration&&!isNaN(v.duration)&&v.duration>0;
   dot.style.display=hasDur?'block':'none';
-  if(hasDur){const pct=(v.currentTime/v.duration)*100;document.getElementById('pl-seek-fill').style.width=pct+'%';dot.style.left=pct+'%';document.getElementById('pl-time').textContent=fmtTime(v.currentTime)+' / '+fmtTime(v.duration);}
-  else{document.getElementById('pl-seek-fill').style.width='0%';document.getElementById('pl-time').textContent='';}
+  if(hasDur){
+    const pct=(v.currentTime/v.duration)*100;
+    (_pel.seekFill||document.getElementById('pl-seek-fill')).style.width=pct+'%';
+    dot.style.left=pct+'%';
+    (_pel.time||document.getElementById('pl-time')).textContent=fmtTime(v.currentTime)+' / '+fmtTime(v.duration);
+  }else{
+    (_pel.seekFill||document.getElementById('pl-seek-fill')).style.width='0%';
+    (_pel.time||document.getElementById('pl-time')).textContent='';
+  }
 }
 function seekClick(e){const v=document.getElementById('player-video');if(!v.duration||isNaN(v.duration))return;const r=document.getElementById('pl-seek-track').getBoundingClientRect();v.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*v.duration;e.stopPropagation();showOverlay();}
 function doResume(){closeResume();const pos=parseFloat(document.getElementById('resume-yes-btn').dataset.pos||0);const v=document.getElementById('player-video');const seek=()=>{if(v.readyState>=1)v.currentTime=pos;else setTimeout(seek,300);};seek();}
@@ -1960,6 +2050,224 @@ function buildAudioMenu(retries){
   _buildGoogleTVPanel(hlsRef);
 }
 
+
+// ══════════════════════════════════════════════════════════════
+// SISTEMA DE LEGENDAS — HLS nativa + VTT/SRT externo
+// ══════════════════════════════════════════════════════════════
+var _subState={
+  active: false,      // legendas ligadas?
+  trackIdx: -1,       // índice da faixa HLS ativa (-1 = nenhuma)
+  cues: [],           // cues parseadas (VTT/SRT)
+  timer: null,        // timer de atualização de cue
+  fontSize: 0,        // ajuste de tamanho (+/- px)
+  lang: ''            // idioma ativo
+};
+
+// Mapa de idiomas para legendas
+var _subLangMap={
+  'por':'🇧🇷 Português','pt':'🇧🇷 Português','pt-br':'🇧🇷 Português (BR)',
+  'eng':'🇺🇸 English','en':'🇺🇸 English',
+  'spa':'🇪🇸 Español','es':'🇪🇸 Español',
+  'fra':'🇫🇷 Français','fr':'🇫🇷 Français',
+  'deu':'🇩🇪 Deutsch','de':'🇩🇪 Deutsch',
+  'ita':'🇮🇹 Italiano','it':'🇮🇹 Italiano',
+  'jpn':'🇯🇵 日本語','ja':'🇯🇵 日本語',
+  'kor':'🇰🇷 한국어','ko':'🇰🇷 한국어',
+};
+function _subLangLabel(t){
+  var raw=(t.name||t.lang||t.language||'').toLowerCase().trim();
+  if(!raw)return null;
+  if(_subLangMap[raw])return _subLangMap[raw];
+  for(var k in _subLangMap){if(raw.includes(k))return _subLangMap[k];}
+  return raw.charAt(0).toUpperCase()+raw.slice(1);
+}
+
+// ── Constrói o menu de legendas
+function buildSubMenu(){
+  var list=document.getElementById('sub-list');
+  if(!list)return;
+  list.innerHTML='';
+
+  var tracks=[];
+
+  // 1) Faixas de legenda nativas do HLS.js (subtitleTracks)
+  if(hls&&hls.subtitleTracks&&hls.subtitleTracks.length){
+    hls.subtitleTracks.forEach(function(t,i){
+      tracks.push({type:'hls',idx:i,label:_subLangLabel(t)||('Legenda '+(i+1))});
+    });
+  }
+
+  // 2) Faixas nativas do video element (TextTrack — WebVTT embutido no stream)
+  var v=_pel.video||document.getElementById('player-video');
+  if(v&&v.textTracks){
+    for(var i=0;i<v.textTracks.length;i++){
+      var tt=v.textTracks[i];
+      if(tt.kind==='subtitles'||tt.kind==='captions'){
+        tracks.push({type:'native',idx:i,label:_subLangLabel(tt)||tt.label||('Legenda '+(i+1))});
+      }
+    }
+  }
+
+  // Linha "Desligado"
+  var offRow=document.createElement('div');
+  offRow.className='sub-row'+(!_subState.active?' active':'');
+  offRow.innerHTML='<span class="sub-dot"></span><span>⊘ Desligado</span>';
+  offRow.onclick=function(){_subOff();buildSubMenu();hideSubMenu();};
+  list.appendChild(offRow);
+
+  if(!tracks.length){
+    var noRow=document.createElement('div');
+    noRow.className='sub-row';noRow.style.opacity='0.55';noRow.style.cursor='default';
+    noRow.innerHTML='<span class="sub-dot"></span><span style="font-size:12px">Nenhuma legenda disponível neste stream</span>';
+    list.appendChild(noRow);
+  } else {
+    tracks.forEach(function(t){
+      var row=document.createElement('div');
+      var isActive=_subState.active&&_subState.trackIdx===t.idx&&_subState.trackType===t.type;
+      row.className='sub-row'+(isActive?' active':'');
+      row.innerHTML='<span class="sub-dot"></span><span>'+esc(t.label)+'</span>';
+      row.onclick=(function(tr){return function(){
+        _subActivate(tr);buildSubMenu();hideSubMenu();
+      };})(t);
+      list.appendChild(row);
+    });
+  }
+
+  // Botão CC ativo/inativo
+  var btn=document.getElementById('sub-act');
+  if(btn)btn.classList.toggle('on',_subState.active);
+}
+
+// ── Ativa uma faixa de legenda
+function _subActivate(track){
+  _subOff(); // desliga qualquer ativa antes
+  _subState.active=true;
+  _subState.trackIdx=track.idx;
+  _subState.trackType=track.type;
+  _subState.lang=track.label||'';
+
+  if(track.type==='hls'&&hls&&hls.subtitleTracks){
+    hls.subtitleTrack=track.idx;
+    // Liga o textTrack nativo correspondente
+    var v=_pel.video||document.getElementById('player-video');
+    if(v&&v.textTracks){
+      for(var i=0;i<v.textTracks.length;i++){
+        v.textTracks[i].mode=(i===track.idx)?'hidden':'disabled';
+        // 'hidden' = processa cues mas não exibe nativamente (a gente exibe)
+      }
+    }
+    _subStartLoop();
+  } else if(track.type==='native'){
+    var v2=_pel.video||document.getElementById('player-video');
+    if(v2&&v2.textTracks&&v2.textTracks[track.idx]){
+      v2.textTracks[track.idx].mode='hidden';
+    }
+    _subStartLoop();
+  }
+  document.getElementById('subtitle-box').classList.add('show');
+  toast('💬 Legenda: '+track.label);
+}
+
+// ── Desliga legendas
+function _subOff(){
+  _subState.active=false;
+  clearInterval(_subState.timer);
+  _subState.timer=null;
+  // Desabilita todas as faixas nativas
+  var v=_pel.video||document.getElementById('player-video');
+  if(v&&v.textTracks){
+    for(var i=0;i<v.textTracks.length;i++) v.textTracks[i].mode='disabled';
+  }
+  if(hls){try{hls.subtitleTrack=-1;}catch(e){}}
+  var box=document.getElementById('subtitle-box');
+  if(box)box.classList.remove('show');
+  var btn=document.getElementById('sub-act');
+  if(btn)btn.classList.remove('on');
+}
+
+// ── Loop que lê a cue atual e exibe na tela
+function _subStartLoop(){
+  clearInterval(_subState.timer);
+  _subState.timer=setInterval(function(){
+    if(!_subState.active)return;
+    var v=_pel.video||document.getElementById('player-video');
+    if(!v)return;
+    var cur=v.currentTime;
+    var txt='';
+
+    // Tenta ler do TextTrack nativo (HLS.js popula automaticamente)
+    if(v.textTracks){
+      for(var i=0;i<v.textTracks.length;i++){
+        var tt=v.textTracks[i];
+        if(tt.mode==='hidden'&&tt.activeCues&&tt.activeCues.length){
+          var cueTexts=[];
+          for(var c=0;c<tt.activeCues.length;c++){
+            var cue=tt.activeCues[c];
+            var t2=cue.text||'';
+            // Remove tags HTML do VTT (<v.Speaker>, <c>, etc)
+            t2=t2.replace(/<[^>]+>/g,'').trim();
+            if(t2)cueTexts.push(t2);
+          }
+          txt=cueTexts.join('\n');
+          break;
+        }
+      }
+    }
+
+    var box=document.getElementById('subtitle-box');
+    var span=document.getElementById('subtitle-text');
+    if(!box||!span)return;
+    if(txt){
+      span.textContent=txt;
+      if(_subState.fontSize!==0){
+        span.style.fontSize=(16+_subState.fontSize)+'px';
+      }
+      box.classList.add('show');
+    }else{
+      box.classList.remove('show');
+    }
+  },200); // verifica a cada 200ms — leve, não afeta performance
+}
+
+// ── Ajuste de tamanho da legenda
+function _subSize(delta){
+  _subState.fontSize=Math.max(-8,Math.min(20,(_subState.fontSize||0)+delta));
+  var span=document.getElementById('subtitle-text');
+  if(span&&_subState.fontSize!==0) span.style.fontSize=(16+_subState.fontSize)+'px';
+  else if(span) span.style.fontSize='';
+}
+
+// ── Ao iniciar stream, detecta legendas e atualiza menu
+function initSubtitles(){
+  _subOff();
+  _subState.trackIdx=-1;
+  if(hls){
+    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED,function(){
+      buildSubMenu();
+    });
+    hls.on(Hls.Events.SUBTITLE_TRACK_LOADED,function(){
+      if(_subState.active)_subStartLoop();
+    });
+  }
+  // Detecta textTracks nativos que podem aparecer depois
+  var v=_pel.video||document.getElementById('player-video');
+  if(v&&v.textTracks){
+    v.textTracks.onaddtrack=function(){buildSubMenu();};
+  }
+  setTimeout(buildSubMenu,800);
+}
+
+// ── Toggle menu de legendas
+function toggleSubMenu(){
+  var m=document.getElementById('sub-menu');
+  var am=document.getElementById('audio-menu');
+  if(am)am.classList.remove('show');
+  if(m){buildSubMenu();m.classList.toggle('show');showOverlay();}
+}
+function hideSubMenu(){
+  var m=document.getElementById('sub-menu');if(m)m.classList.remove('show');
+}
+
 // ══════════════════════════════════════════════
 // GOOGLE TV / TCL — controle de áudio via API
 // nativa do Android WebView + fallback HLS
@@ -2013,46 +2321,74 @@ function _buildGoogleTVPanel(hlsRef){
 
 function _gtvSelectTrack(track,hlsRef){
   _gtvSelectedIdx=track.idx;
-  var v=document.getElementById('player-video');
-  var didSwitch=false;
+  var v=_pel.video||document.getElementById('player-video');
 
-  // Método 1: HLS.js direto (mais confiável quando disponível)
+  // ── Método A: HLS.js — seta audioTrack e força reload no ponto atual
+  // É o método mais eficaz para Google TV / TCL WebView
   if(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length>track.idx){
+    var cur=v.currentTime||0;
+    var src=hlsRef.url||pUrls[pIdx]||'';
+    // Seta a faixa desejada ANTES de recarregar
     hlsRef.audioTrack=track.idx;
-    didSwitch=true;
+    // Força o HLS a reprocessar o manifest com a nova faixa
+    // Em alguns WebViews isso já basta; em outros precisamos do reload
+    setTimeout(function(){
+      // Se o áudio ainda não mudou (sem som ou faixa errada), força reload
+      if(hlsRef&&src){
+        hlsRef.stopLoad();
+        hlsRef.audioTrack=track.idx; // reafirmar antes do reload
+        hlsRef.startLoad(Math.max(0,cur-1));
+      }
+    },300);
+    try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
+    buildAudioMenu();
+    toast('🎵 '+track.label);
+    hideAudioMenu();
+    return;
   }
 
-  // Método 2: HTMLVideoElement.audioTracks (Chromium/WebView)
-  if(!didSwitch&&v&&v.audioTracks&&v.audioTracks.length>track.idx){
+  // ── Método B: HTMLVideoElement.audioTracks (nativo — alguns Android TV)
+  if(v&&v.audioTracks&&v.audioTracks.length>track.idx){
     for(var j=0;j<v.audioTracks.length;j++) v.audioTracks[j].enabled=false;
     v.audioTracks[track.idx].enabled=true;
-    didSwitch=true;
+    try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
+    buildAudioMenu();
+    toast('🎵 '+track.label);
+    hideAudioMenu();
+    return;
   }
 
-  // Método 3: Android WebView bridge (Google TV expõe objeto Android)
-  if(!didSwitch&&typeof Android!=='undefined'&&Android.setAudioTrack){
-    try{Android.setAudioTrack(track.idx);didSwitch=true;}catch(e){}
+  // ── Método C: Android WebView bridge
+  if(typeof Android!=='undefined'&&Android.setAudioTrack){
+    try{Android.setAudioTrack(track.idx);}catch(e){}
   }
 
-  // Método 4: Forçar via seek (Google TV ExoPlayer — recarrega no ponto atual com nova faixa)
-  if(!didSwitch&&v){
-    var cur=v.currentTime;
-    // Seta preferência de faixa via textTrack (workaround ExoPlayer)
-    if(v.textTracks){
-      for(var k=0;k<v.textTracks.length;k++){
-        v.textTracks[k].mode=(k===track.idx)?'showing':'hidden';
-      }
-    }
-    // Guarda no localStorage para persistir na recarga
-    try{localStorage.setItem('cpstv_audio_track',track.idx);}catch(e){}
-    // Pequeno seek força o ExoPlayer a reavaliar a faixa de áudio
-    v.currentTime=Math.max(0,cur-0.5);
-    setTimeout(function(){if(v.currentTime<cur+1)v.currentTime=cur;},400);
-    didSwitch=true;
+  // ── Método D: Reload completo da URL no ponto atual (último recurso)
+  // Funciona em qualquer WebView pois reinicia o HLS do zero com a faixa certa
+  var cur2=v?v.currentTime||0:0;
+  var url=pUrls[pIdx]||'';
+  if(url&&hlsRef){
+    hlsRef.destroy();hls=null;
+    var newHls=new Hls({
+      enableWorker:false,lowLatencyMode:false,
+      maxBufferLength:_bufCfg.maxBuf||60,
+      startLevel:-1,
+      audioTrackController:true
+    });
+    newHls.loadSource(url);
+    newHls.attachMedia(v);
+    newHls.on(Hls.Events.MANIFEST_PARSED,function(){
+      newHls.audioTrack=track.idx;
+      v.currentTime=Math.max(0,cur2-1);
+      v.play().catch(function(){});
+      hls=newHls;
+      setTimeout(buildAudioMenu,500);
+    });
+    hls=newHls;
   }
-
+  try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
   buildAudioMenu();
-  toast('📺 Google TV: '+track.label);
+  toast('🎵 '+track.label);
   hideAudioMenu();
 }
 
@@ -2098,6 +2434,7 @@ function _fixAudio(){
 }
 function toggleAudioMenu(){
   var m=document.getElementById('audio-menu');
+  hideSubMenu(); // fecha legenda se aberto
   if(m){m.classList.toggle('show');showOverlay();}
 }
 function hideAudioMenu(){
