@@ -2269,13 +2269,14 @@ function hideSubMenu(){
 }
 
 // ══════════════════════════════════════════════
-// GOOGLE TV / TCL — controle de áudio via API
-// nativa do Android WebView + fallback HLS
+// GOOGLE TV / TCL — sistema de áudio reescrito
+// Abordagem: sempre faz reload completo do HLS
+// para garantir troca de faixa em qualquer WebView
 // ══════════════════════════════════════════════
 var _gtvSelectedIdx=0;
+
 function _isGoogleTV(){
   var ua=(navigator.userAgent||'').toLowerCase();
-  // Detecta Google TV, Android TV, TCL, WebView em TV
   return /googletv|android tv|crkey|afttv|nexus player|chromecast|tclwebkit|tclbro/.test(ua)
     || (ua.includes('android') && (ua.includes('tv') || ua.includes('large')))
     || (typeof Android!=='undefined')
@@ -2287,22 +2288,22 @@ function _buildGoogleTVPanel(hlsRef){
   var tlist=document.getElementById('gtv-track-list');
   if(!panel||!tlist)return;
 
-  // Coleta faixas disponíveis (HLS ou estimadas)
+  // Coleta faixas HLS disponíveis
   var tracks=[];
   if(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length){
     hlsRef.audioTracks.forEach(function(t,i){
-      tracks.push({idx:i, label:_langLabel(t)||('Faixa '+(i+1)), src:'hls'});
+      tracks.push({idx:i, label:_langLabel(t)||('Faixa '+(i+1))});
     });
   } else {
-    // Sem faixas detectadas: oferece padrão PT/EN para forçar
+    // Sem faixas ainda: mostra opções fixas para forçar
     tracks=[
-      {idx:0,label:'🇧🇷 Português (Faixa 1)',src:'force'},
-      {idx:1,label:'🇺🇸 English (Faixa 2)',src:'force'},
-      {idx:2,label:'Faixa 3',src:'force'},
+      {idx:0, label:'🇧🇷 Português — Faixa 1'},
+      {idx:1, label:'🇺🇸 English — Faixa 2'},
+      {idx:2, label:'Faixa 3'},
     ];
   }
 
-  // Mostra painel sempre na Google TV; nas outras, só se tiver faixas HLS
+  // Mostra painel sempre na Google TV; nas demais só se houver múltiplas faixas HLS
   var show=_isGoogleTV()||(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length>1);
   panel.style.display=show?'block':'none';
   if(!show)return;
@@ -2313,124 +2314,142 @@ function _buildGoogleTVPanel(hlsRef){
     btn.className='gtv-track-btn'+(t.idx===_gtvSelectedIdx?' active':'');
     btn.textContent=t.label;
     btn.onclick=(function(track){return function(){
-      _gtvSelectTrack(track,hlsRef);
+      _gtvSelectTrack(track);
     };})(t);
     tlist.appendChild(btn);
   });
 }
 
-function _gtvSelectTrack(track,hlsRef){
+// ── Troca de faixa na TCL/Google TV:
+// Sempre destrói e recria o HLS para garantir
+// que o WebView carregue a faixa correta do zero.
+function _gtvSelectTrack(track){
   _gtvSelectedIdx=track.idx;
   var v=_pel.video||document.getElementById('player-video');
-
-  // ── Método A: HLS.js — seta audioTrack e força reload no ponto atual
-  // É o método mais eficaz para Google TV / TCL WebView
-  if(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length>track.idx){
-    var cur=v.currentTime||0;
-    var src=hlsRef.url||pUrls[pIdx]||'';
-    // Seta a faixa desejada ANTES de recarregar
-    hlsRef.audioTrack=track.idx;
-    // Força o HLS a reprocessar o manifest com a nova faixa
-    // Em alguns WebViews isso já basta; em outros precisamos do reload
-    setTimeout(function(){
-      // Se o áudio ainda não mudou (sem som ou faixa errada), força reload
-      if(hlsRef&&src){
-        hlsRef.stopLoad();
-        hlsRef.audioTrack=track.idx; // reafirmar antes do reload
-        hlsRef.startLoad(Math.max(0,cur-1));
-      }
-    },300);
-    try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
-    buildAudioMenu();
-    toast('🎵 '+track.label);
-    hideAudioMenu();
-    return;
-  }
-
-  // ── Método B: HTMLVideoElement.audioTracks (nativo — alguns Android TV)
-  if(v&&v.audioTracks&&v.audioTracks.length>track.idx){
-    for(var j=0;j<v.audioTracks.length;j++) v.audioTracks[j].enabled=false;
-    v.audioTracks[track.idx].enabled=true;
-    try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
-    buildAudioMenu();
-    toast('🎵 '+track.label);
-    hideAudioMenu();
-    return;
-  }
-
-  // ── Método C: Android WebView bridge
-  if(typeof Android!=='undefined'&&Android.setAudioTrack){
-    try{Android.setAudioTrack(track.idx);}catch(e){}
-  }
-
-  // ── Método D: Reload completo da URL no ponto atual (último recurso)
-  // Funciona em qualquer WebView pois reinicia o HLS do zero com a faixa certa
-  var cur2=v?v.currentTime||0:0;
   var url=pUrls[pIdx]||'';
-  if(url&&hlsRef){
-    hlsRef.destroy();hls=null;
+  if(!url||!v){toast('❌ Sem stream ativo','err');return;}
+
+  // Salva posição atual (VOD) para retomar depois
+  var resumeAt=isVOD?(v.currentTime||0):0;
+
+  toast('⏳ Trocando para '+track.label+'...');
+  showPlSpin(true);
+
+  // Destrói HLS atual completamente
+  if(hls){try{hls.destroy();}catch(e){}hls=null;}
+  v.pause();v.src='';
+
+  // Salva preferência
+  try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
+
+  // Aguarda 300ms para o WebView liberar recursos de áudio
+  setTimeout(function(){
+    var bc=detectBufferCapacity();
     var newHls=new Hls({
-      enableWorker:false,lowLatencyMode:false,
-      maxBufferLength:_bufCfg.maxBuf||60,
-      startLevel:-1,
-      audioTrackController:true
+      enableWorker: false,
+      lowLatencyMode: !isVOD,
+      startLevel: -1,
+      maxBufferLength: isVOD?bc.maxBuf:30,
+      maxMaxBufferLength: isVOD?bc.maxBuf:30,
+      maxBufferSize: isVOD?bc.maxBufBytes:50*1024*1024,
+      backBufferLength: isVOD?bc.backBuf:0,
+      // Força a faixa de áudio desejada desde o início
+      defaultAudioCodec: undefined,
     });
+
     newHls.loadSource(url);
     newHls.attachMedia(v);
+
     newHls.on(Hls.Events.MANIFEST_PARSED,function(){
-      newHls.audioTrack=track.idx;
-      v.currentTime=Math.max(0,cur2-1);
+      // Define a faixa ANTES de iniciar a reprodução
+      if(newHls.audioTracks&&newHls.audioTracks.length>track.idx){
+        newHls.audioTrack=track.idx;
+      }
+      // Retoma posição no VOD
+      if(resumeAt>2){
+        var seek=function(){
+          if(v.readyState>=1){v.currentTime=resumeAt;}
+          else{setTimeout(seek,200);}
+        };
+        setTimeout(seek,200);
+      }
       v.play().catch(function(){});
       hls=newHls;
-      setTimeout(buildAudioMenu,500);
+      showPlSpin(false);
+      isPlaying=true;
+      document.getElementById('btn-pp').textContent='⏸';
+      setTimeout(buildAudioMenu,600);
+      setTimeout(initSubtitles,800);
+      toast('🎵 '+track.label,'ok');
     });
+
+    newHls.on(Hls.Events.AUDIO_TRACKS_UPDATED,function(){
+      // Reafirma a faixa escolhida quando a lista de faixas atualizar
+      if(newHls.audioTracks&&newHls.audioTracks.length>track.idx){
+        newHls.audioTrack=track.idx;
+      }
+      buildAudioMenu();
+    });
+
+    newHls.on(Hls.Events.ERROR,function(_,d){
+      if(!d.fatal)return;
+      if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
+        newHls.recoverMediaError();
+      } else {
+        newHls.destroy();hls=null;
+        showPlSpin(false);
+        showPlErr(true,'❌ Erro ao trocar faixa de áudio.');
+      }
+    });
+
     hls=newHls;
-  }
-  try{tvSet('cpstv_audio_track',String(track.idx));}catch(e){}
-  buildAudioMenu();
-  toast('🎵 '+track.label);
+  },300);
+
   hideAudioMenu();
 }
 
-// Restaura preferência de faixa após cada carregamento
+// Restaura preferência de faixa salva após cada novo carregamento
 function _gtvRestoreTrack(){
   try{
-    var saved=localStorage.getItem('cpstv_audio_track');
-    if(saved===null)return;
+    var saved=tvGet('cpstv_audio_track');
+    if(!saved)return;
     var idx=parseInt(saved)||0;
+    if(idx===0)return; // faixa 0 já é o padrão, sem necessidade de forçar
     var hlsRef=hls;
     if(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length>idx){
       hlsRef.audioTrack=idx;
+      _gtvSelectedIdx=idx;
     }
   }catch(e){}
 }
 
 function _addSilentFix(list,hlsRef){
-  // Se estiver sem áudio, botão para forçar restart da faixa
   var fix=document.createElement('div');
   fix.style.cssText='padding:10px 16px;border-top:1px solid var(--border);';
   fix.innerHTML='<button onclick="_fixAudio()" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 14px;color:var(--text);font-size:12px;cursor:pointer;width:100%">🔧 Sem áudio? Clique para reparar</button>';
   list.appendChild(fix);
 }
 function _fixAudio(){
-  var v=document.getElementById('player-video');
-  var hlsRef=hls;
-  if(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length){
-    // Tenta cada faixa até encontrar uma com áudio
-    var cur=hlsRef.audioTrack;
-    var next=(cur+1)%hlsRef.audioTracks.length;
-    hlsRef.audioTrack=next;
-    toast('🎵 Tentando faixa '+(next+1)+'...');
-    buildAudioMenu();
-  } else if(v){
-    // Para MP4: tenta recarregar o ponto atual
-    var t=v.currentTime;
-    v.load();
-    v.currentTime=t;
-    v.play().catch(()=>{});
-    toast('🔧 Áudio reiniciado');
-  }
   hideAudioMenu();
+  var hlsRef=hls;
+  if(hlsRef&&hlsRef.audioTracks&&hlsRef.audioTracks.length>1){
+    // Cicla para a próxima faixa usando o sistema robusto de reload
+    var next=(_gtvSelectedIdx+1)%hlsRef.audioTracks.length;
+    var label=_langLabel(hlsRef.audioTracks[next])||('Faixa '+(next+1));
+    _gtvSelectTrack({idx:next,label:label});
+  } else {
+    // Faixa única ou MP4: reload simples no ponto atual
+    var v=document.getElementById('player-video');
+    var url=pUrls[pIdx]||'';
+    if(v&&url&&hlsRef){
+      var t=v.currentTime||0;
+      _gtvSelectTrack({idx:0,label:'Faixa 1'});
+    } else if(v){
+      var t2=v.currentTime;
+      v.load();
+      setTimeout(function(){v.currentTime=t2;v.play().catch(function(){});},300);
+      toast('🔧 Áudio reiniciado');
+    }
 }
 function toggleAudioMenu(){
   var m=document.getElementById('audio-menu');
@@ -2488,4 +2507,3 @@ function toast(msg,type=''){const el=document.getElementById('toast');el.textCon
 </script>
 </body>
 </html>
-
