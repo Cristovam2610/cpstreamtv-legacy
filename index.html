@@ -1794,15 +1794,26 @@ function loadUrl(idx){
       else{hls.destroy();hls=null;loadUrl(pIdx+1);}
     });
   }else{
-    v.src=url;v.load();v.play().catch(()=>loadUrl(pIdx+1));
+    // MP4/MKV — forçamento de áudio para TCL/Android WebView
+    v.src=url;
+    v.load();
+    v.onloadedmetadata=function(){
+      _forceActivateAudio(v);
+      showPlSpin(false);
+      buildAudioMenu();
+      initSubtitles();
+      if(isVOD)showBufIndicator(detectBufferCapacity());
+    };
+    v.play().catch(function(){setTimeout(function(){loadUrl(pIdx+1);},300);});
   }
 
   v.onwaiting=()=>showPlSpin(true);
   v.onplaying=()=>{
     showPlSpin(false);isPlaying=true;
-    document.getElementById('btn-pp').textContent='⏸';
+    document.getElementById('btn-pp').textContent='\u23f8';
+    _forceActivateAudio(v);
     if(v.audioTracks){
-      v.audioTracks.onaddtrack=function(){buildAudioMenu();};
+      v.audioTracks.onaddtrack=function(){_forceActivateAudio(v);buildAudioMenu();};
       v.audioTracks.onremovetrack=function(){buildAudioMenu();};
     }
     setTimeout(buildAudioMenu,800);
@@ -1983,6 +1994,42 @@ function _langLabel(t){
 
 // Retry automático para detectar faixas que demoram a aparecer
 var _audioRetryTimer=null;
+// ══════════════════════════════════════════════
+// FORÇA ATIVAÇÃO DE ÁUDIO — TCL / Android WebView
+// MP4/MKV não ativa faixa de áudio automaticamente
+// em alguns WebViews; esta função força a ativação.
+// ══════════════════════════════════════════════
+function _forceActivateAudio(v){
+  if(!v)return;
+  try{
+    // Método 1: HTMLVideoElement.audioTracks (nativo Android/Chrome)
+    if(v.audioTracks&&v.audioTracks.length>0){
+      var saved=parseInt(tvGet('cpstv_audio_track')||'0')||0;
+      var targetIdx=saved<v.audioTracks.length?saved:0;
+      var alreadyActive=false;
+      for(var i=0;i<v.audioTracks.length;i++){
+        if(v.audioTracks[i].enabled&&i===targetIdx){alreadyActive=true;}
+        else v.audioTracks[i].enabled=false;
+      }
+      if(!alreadyActive){
+        v.audioTracks[targetIdx].enabled=true;
+      }
+      _gtvSelectedIdx=targetIdx;
+      return;
+    }
+  }catch(e){}
+  try{
+    // Método 2: muted/unmuted cycle — força o WebView a reativar o pipeline de áudio
+    // Funciona em TCL que ignora audioTracks mas respeita muted
+    if(!isMuted){
+      v.muted=true;
+      setTimeout(function(){
+        if(!isMuted&&v)v.muted=false;
+      },80);
+    }
+  }catch(e){}
+}
+
 function buildAudioMenu(retries){
   retries=retries||0;
   var list=document.getElementById('audio-list');
@@ -2024,6 +2071,11 @@ function buildAudioMenu(retries){
         row.onclick=function(){
           for(var j=0;j<nTracks.length;j++)nTracks[j].enabled=false;
           nTracks[idx].enabled=true;
+          _gtvSelectedIdx=idx;
+          try{tvSet('cpstv_audio_track',String(idx));}catch(e){}
+          // Força reativação do pipeline de áudio na TCL
+          var vv=_pel.video||document.getElementById('player-video');
+          _forceActivateAudio(vv);
           buildAudioMenu();toast('🎵 '+label);hideAudioMenu();
         };
         list.appendChild(row);
